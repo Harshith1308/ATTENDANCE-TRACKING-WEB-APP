@@ -69,8 +69,8 @@
                     </div>
                     <div class="col-sm-6 col-md-3 mb-3">
                         <a href="{{ url_for('upload') }}" class="btn btn-outline-primary d-flex flex-column align-items-center p-3 h-100 w-100">
-                            <i class="fas fa-cloud-upload-alt fa-2x mb-2"></i>
-                            <span>Upload Class Photos</span>
+                            <i class="fas fa-clipboard-check fa-2x mb-2"></i>
+                            <span>Take Attendance</span>
                         </a>
                     </div>
                     <div class="col-sm-6 col-md-3 mb-3">
@@ -143,7 +143,7 @@
                 {% else %}
                 <div class="alert alert-info">
                     <i class="fas fa-info-circle me-2"></i>
-                    No class sessions found. Start by <a href="{{ url_for('upload') }}">uploading class photos</a>.
+                    No class sessions found. Start by <a href="{{ url_for('upload') }}">taking attendance</a>.
                 </div>
                 {% endif %}
             </div>

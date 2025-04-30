@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Upload Class Photos - Facial Attendance System{% endblock %}
+{% block title %}Take Attendance - Facial Attendance System{% endblock %}
 
 {% block content %}
 <div class="row mb-4">
@@ -8,12 +8,12 @@
         <nav aria-label="breadcrumb">
             <ol class="breadcrumb">
                 <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
-                <li class="breadcrumb-item active" aria-current="page">Upload Class Photos</li>
+                <li class="breadcrumb-item active" aria-current="page">Take Attendance</li>
             </ol>
         </nav>
         <h2 class="mb-4">
-            <i class="fas fa-cloud-upload-alt text-primary me-2"></i>
-            Upload Class Photos
+            <i class="fas fa-clipboard-check text-primary me-2"></i>
+            Take Attendance
         </h2>
         <div class="alert alert-info" role="alert">
             <i class="fas fa-info-circle me-2"></i>
@@ -61,8 +61,8 @@
                     
                     <div class="d-grid gap-2">
                         <button type="submit" class="btn btn-primary" id="uploadBtn">
-                            <i class="fas fa-upload me-2"></i>
-                            Upload and Process
+                            <i class="fas fa-clipboard-check me-2"></i>
+                            Take Attendance
                         </button>
                     </div>
                 </form>

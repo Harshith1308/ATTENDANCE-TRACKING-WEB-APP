@@ -150,9 +150,9 @@ def dashboard():
                           today_percentage=today_percentage,
                           week_percentage=week_percentage)
 
-@app.route('/upload', methods=['GET', 'POST'])
+@app.route('/take-attendance', methods=['GET', 'POST'])
 @login_required
-def upload():
+def take_attendance():
     if request.method == 'POST':
         # Check if the form contains the class session information
         session_name = request.form.get('session_name')
@@ -162,13 +162,13 @@ def upload():
         # Validate session data
         if not session_name or not session_date:
             flash('Session name and date are required', 'danger')
-            return redirect(url_for('upload'))
+            return redirect(url_for('take_attendance'))
         
         try:
             session_date = datetime.strptime(session_date, '%Y-%m-%d').date()
         except ValueError:
             flash('Invalid date format', 'danger')
-            return redirect(url_for('upload'))
+            return redirect(url_for('take_attendance'))
         
         # Create a new class session
         class_session = ClassSession(
@@ -184,20 +184,20 @@ def upload():
         if 'files' not in request.files:
             flash('No files selected', 'danger')
             db.session.rollback()
-            return redirect(url_for('upload'))
+            return redirect(url_for('take_attendance'))
         
         files = request.files.getlist('files')
         if not files or files[0].filename == '':
             flash('No files selected', 'danger')
             db.session.rollback()
-            return redirect(url_for('upload'))
+            return redirect(url_for('take_attendance'))
         
         # Filter valid image files
         valid_files = [f for f in files if f and allowed_file(f.filename)]
         if not valid_files:
             flash('No valid image files selected', 'danger')
             db.session.rollback()
-            return redirect(url_for('upload'))
+            return redirect(url_for('take_attendance'))
         
         # Process all valid files for attendance
         success, results = process_multiple_photos(valid_files, class_session.id)
@@ -209,7 +209,7 @@ def upload():
         else:
             db.session.rollback()
             flash('Error processing images', 'danger')
-            return redirect(url_for('upload'))
+            return redirect(url_for('take_attendance'))
     
     return render_template('upload.html')
 

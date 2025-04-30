@@ -273,7 +273,7 @@ def students():
     all_students = Student.query.order_by(Student.roll_number).all()
     return render_template('students.html', students=all_students)
 
-# NEW ROUTE: Update facial data for existing students
+# Take attendance by uploading student photos
 @app.route('/update-face', methods=['GET', 'POST'])
 @login_required
 def update_face():
@@ -343,13 +343,13 @@ def update_face():
             db.session.add(encoding_record)
             db.session.commit()
             
-            flash(f"Successfully updated face for student {student.name} ({student.roll_number})", 'success')
+            flash(f"Successfully marked attendance for student {student.name} ({student.roll_number})", 'success')
             return redirect(url_for('students'))
             
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Error updating student face: {str(e)}")
-            flash(f"Error updating student face: {str(e)}", 'danger')
+            logger.error(f"Error marking attendance: {str(e)}")
+            flash(f"Error marking attendance: {str(e)}", 'danger')
             return redirect(url_for('update_face'))
     
     # For GET request: show the form

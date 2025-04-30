@@ -49,11 +49,22 @@
         <div class="card shadow-sm">
             <div class="card-body">
                 <form id="dateRangeForm" class="date-range-form row align-items-end">
-                    <div class="col-md-4 mb-3 mb-md-0">
-                        <label for="dateRange" class="form-label">Date Range</label>
-                        <div class="input-group">
-                            <span class="input-group-text"><i class="fas fa-calendar"></i></span>
-                            <input type="text" class="form-control" id="dateRange" name="dateRange">
+                    <div class="col-md-6 mb-3 mb-md-0">
+                        <div class="row">
+                            <div class="col-md-6 mb-2 mb-md-0">
+                                <label for="startDate" class="form-label">Start Date</label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="fas fa-calendar"></i></span>
+                                    <input type="date" class="form-control" id="startDate" name="startDate">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="endDate" class="form-label">End Date</label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="fas fa-calendar"></i></span>
+                                    <input type="date" class="form-control" id="endDate" name="endDate">
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="col-md-3 mb-3 mb-md-0">
@@ -457,32 +468,40 @@
             order: [[3, 'desc']] // Sort by consecutive absences
         });
         
-        // Initialize Date Range Picker
-        $('#dateRange').daterangepicker({
-            startDate: moment().subtract(30, 'days'),
-            endDate: moment(),
-            ranges: {
-               'Today': [moment(), moment()],
-               'Yesterday': [moment().subtract(1, 'days'), moment().subtract(1, 'days')],
-               'Last 7 Days': [moment().subtract(6, 'days'), moment()],
-               'Last 30 Days': [moment().subtract(29, 'days'), moment()],
-               'This Month': [moment().startOf('month'), moment().endOf('month')],
-               'Last Month': [moment().subtract(1, 'month').startOf('month'), moment().subtract(1, 'month').endOf('month')]
-            }
-        });
+        // Initialize date pickers with default values
+        const today = new Date();
+        const thirtyDaysAgo = new Date(today);
+        thirtyDaysAgo.setDate(today.getDate() - 30);
+        
+        // Format dates as YYYY-MM-DD for the date inputs
+        const formatDateForInput = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+        
+        // Set default values
+        $('#startDate').val(formatDateForInput(thirtyDaysAgo));
+        $('#endDate').val(formatDateForInput(today));
         
         // Filter form submission
         $('#dateRangeForm').on('submit', function(e) {
             e.preventDefault();
+            
+            const startDate = $('#startDate').val();
+            const endDate = $('#endDate').val();
+            const course = $('#courseFilter').val();
+            
             // Here you would normally make an AJAX request to get filtered data
             // For now, just show a message
-            alert('Filter applied: ' + $('#dateRange').val() + ', Course: ' + $('#courseFilter').val());
+            alert('Filter applied: ' + startDate + ' to ' + endDate + ', Course: ' + course);
         });
         
         // Reset filters
         $('#resetFilters').on('click', function() {
-            $('#dateRange').data('daterangepicker').setStartDate(moment().subtract(30, 'days'));
-            $('#dateRange').data('daterangepicker').setEndDate(moment());
+            $('#startDate').val(formatDateForInput(thirtyDaysAgo));
+            $('#endDate').val(formatDateForInput(today));
             $('#courseFilter').val('');
             $('#dateRangeForm').submit();
         });
@@ -601,7 +620,7 @@
                     pageOrientation: 'landscape',
                     content: [
                         { text: title, style: 'header' },
-                        { text: 'Date Range: ' + $('#dateRange').val(), style: 'subheader' },
+                        { text: 'Date Range: ' + $('#startDate').val() + ' to ' + $('#endDate').val(), style: 'subheader' },
                         {
                             table: {
                                 headerRows: 1,

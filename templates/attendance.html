@@ -139,11 +139,11 @@
                                 </td>
                                 <td>
                                     {% if attendance %}
-                                    <button class="btn btn-sm btn-danger mark-btn" data-status="absent" data-student-id="{{ student.id }}">
+                                    <button class="btn btn-sm btn-danger mark-btn" data-status="absent" data-student-id="{{ student.id }}" data-session-id="{{ session.id }}">
                                         <i class="fas fa-times"></i> Mark Absent
                                     </button>
                                     {% else %}
-                                    <button class="btn btn-sm btn-success mark-btn" data-status="present" data-student-id="{{ student.id }}">
+                                    <button class="btn btn-sm btn-success mark-btn" data-status="present" data-student-id="{{ student.id }}" data-session-id="{{ session.id }}">
                                         <i class="fas fa-check"></i> Mark Present
                                     </button>
                                     {% endif %}
@@ -194,13 +194,61 @@
         markButtons.forEach(button => {
             button.addEventListener('click', function() {
                 const studentId = this.getAttribute('data-student-id');
+                const sessionId = this.getAttribute('data-session-id');
                 const status = this.getAttribute('data-status');
+                const buttonElement = this;
                 
-                // TODO: Implement API call to update attendance status
-                alert(`Marking student ${studentId} as ${status}`);
+                // Disable button during processing
+                buttonElement.disabled = true;
+                buttonElement.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
                 
-                // For now, just reload the page
-                window.location.reload();
+                // Create form data
+                const formData = new FormData();
+                formData.append('student_id', studentId);
+                formData.append('session_id', sessionId);
+                formData.append('status', status);
+                
+                // Make API call to update attendance
+                fetch('/attendance/mark', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Show success message
+                        const alertDiv = document.createElement('div');
+                        alertDiv.className = 'alert alert-success alert-dismissible fade show';
+                        alertDiv.innerHTML = `
+                            <strong>Success!</strong> ${data.message}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                        `;
+                        
+                        // Add alert to the page
+                        const contentDiv = document.querySelector('main .container');
+                        contentDiv.insertBefore(alertDiv, contentDiv.firstChild);
+                        
+                        // Reload the page to show updated status
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 1500);
+                    } else {
+                        // Show error message
+                        alert('Error: ' + data.message);
+                        buttonElement.disabled = false;
+                        buttonElement.innerHTML = status === 'present' ? 
+                            '<i class="fas fa-check"></i> Mark Present' : 
+                            '<i class="fas fa-times"></i> Mark Absent';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while updating attendance');
+                    buttonElement.disabled = false;
+                    buttonElement.innerHTML = status === 'present' ? 
+                        '<i class="fas fa-check"></i> Mark Present' : 
+                        '<i class="fas fa-times"></i> Mark Absent';
+                });
             });
         });
     });

@@ -1,10 +1,13 @@
 import os
 import logging
+import csv
+import io
 from datetime import datetime, timedelta, date
-from flask import render_template, request, redirect, url_for, flash, jsonify, current_app, send_from_directory
+from flask import render_template, request, redirect, url_for, flash, jsonify, current_app, send_from_directory, Response
 from flask_login import login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, desc, case, text, distinct
+from sqlalchemy.orm import aliased
 
 from app import app, db
 from models import User, Student, ClassSession, Attendance, ProcessedImage, FaceEncoding
@@ -640,6 +643,655 @@ def attendance(session_id):
                           session=session,
                           processed_images=processed_images,
                           attendance_records=attendance_records)
+
+@app.route('/attendance/mark', methods=['POST'])
+@login_required
+def mark_manual_attendance():
+    """Handle manual attendance marking"""
+    if request.method == 'POST':
+        student_id = request.form.get('student_id')
+        session_id = request.form.get('session_id')
+        status = request.form.get('status')
+        
+        if not student_id or not session_id or not status:
+            return jsonify({'success': False, 'message': 'Missing required parameters'}), 400
+        
+        try:
+            student_id = int(student_id)
+            session_id = int(session_id)
+            
+            # Check if student and session exist
+            student = Student.query.get(student_id)
+            session = ClassSession.query.get(session_id)
+            
+            if not student or not session:
+                return jsonify({'success': False, 'message': 'Student or session not found'}), 404
+            
+            # Get existing attendance record if any
+            attendance = Attendance.query.filter_by(
+                student_id=student_id,
+                class_session_id=session_id
+            ).first()
+            
+            if status == 'present':
+                if attendance:
+                    # Update existing record
+                    attendance.status = 'present'
+                    attendance.marked_at = datetime.now()
+                else:
+                    # Create new record
+                    attendance = Attendance(
+                        student_id=student_id,
+                        class_session_id=session_id,
+                        status='present',
+                        marked_at=datetime.now()
+                    )
+                    db.session.add(attendance)
+                    
+                # Update session stats
+                session.present_students += 1
+                
+            elif status == 'absent':
+                if attendance:
+                    # Remove attendance record
+                    db.session.delete(attendance)
+                    
+                    # Update session stats
+                    if session.present_students > 0:
+                        session.present_students -= 1
+            
+            db.session.commit()
+            
+            return jsonify({
+                'success': True, 
+                'message': f'Student {student.name} marked as {status}',
+                'student': {
+                    'id': student.id,
+                    'name': student.name,
+                    'roll_number': student.roll_number
+                },
+                'status': status
+            })
+            
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error marking attendance: {str(e)}")
+            return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
+    
+    return jsonify({'success': False, 'message': 'Invalid request method'}), 405
+
+@app.route('/reports')
+@login_required
+def reports():
+    """View attendance reports and statistics"""
+    try:
+        # Get date range parameters
+        start_date_str = request.args.get('start_date', '')
+        end_date_str = request.args.get('end_date', '')
+        course_filter = request.args.get('course', '')
+        
+        # Default to last 30 days if no date range provided
+        today = date.today()
+        if start_date_str and end_date_str:
+            try:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                start_date = today - timedelta(days=30)
+                end_date = today
+        else:
+            start_date = today - timedelta(days=30)
+            end_date = today
+        
+        # Build the base query with date range filter
+        date_filter = and_(ClassSession.date >= start_date, ClassSession.date <= end_date)
+        
+        # Add course filter if provided
+        if course_filter:
+            class_sessions = ClassSession.query.filter(
+                date_filter,
+                ClassSession.course == course_filter
+            ).order_by(ClassSession.date.desc()).all()
+        else:
+            class_sessions = ClassSession.query.filter(
+                date_filter
+            ).order_by(ClassSession.date.desc()).all()
+        
+        # Get list of all courses for the filter dropdown
+        courses = db.session.query(ClassSession.course).distinct().filter(
+            ClassSession.course.isnot(None),
+            ClassSession.course != ''
+        ).order_by(ClassSession.course).all()
+        courses = [course[0] for course in courses]
+        
+        # Get student-wise attendance stats
+        student_attendance = []
+        
+        # Define a subquery to get the latest attendance date for each student
+        latest_attendance = db.session.query(
+            Attendance.student_id,
+            func.max(ClassSession.date).label('last_date')
+        ).join(
+            ClassSession, Attendance.class_session_id == ClassSession.id
+        ).filter(
+            date_filter
+        ).group_by(
+            Attendance.student_id
+        ).subquery()
+        
+        # Query for student-wise attendance within the date range
+        student_stats = db.session.query(
+            Student.id,
+            Student.roll_number,
+            Student.name,
+            Student.course,
+            func.count(Attendance.id).label('present_count'),
+            func.count(distinct(ClassSession.id)).label('total_sessions'),
+            func.max(ClassSession.date).label('last_attendance')
+        ).outerjoin(
+            Attendance, Student.id == Attendance.student_id
+        ).outerjoin(
+            ClassSession, and_(
+                Attendance.class_session_id == ClassSession.id,
+                date_filter
+            )
+        ).group_by(
+            Student.id
+        ).all()
+        
+        # Process student stats to calculate percentages
+        for student in student_stats:
+            # Count total sessions in the date range
+            if course_filter:
+                total_sessions = ClassSession.query.filter(
+                    date_filter,
+                    ClassSession.course == course_filter
+                ).count()
+            else:
+                total_sessions = ClassSession.query.filter(date_filter).count()
+            
+            # Add to the list with calculated fields
+            student_attendance.append({
+                'id': student.id,
+                'roll_number': student.roll_number,
+                'name': student.name,
+                'course': student.course,
+                'present_count': student.present_count,
+                'total_sessions': total_sessions,
+                'last_attendance': student.last_attendance
+            })
+        
+        # Get course-wise attendance stats
+        course_attendance = []
+        
+        # Get all courses with at least one student
+        all_courses = db.session.query(Student.course).distinct().filter(
+            Student.course.isnot(None),
+            Student.course != ''
+        ).all()
+        all_courses = [course[0] for course in all_courses]
+        
+        # Add an entry for students without a course
+        all_courses.append(None)
+        
+        for course_name in all_courses:
+            display_name = course_name or 'Uncategorized'
+            
+            # Count students in this course
+            student_count = Student.query.filter(
+                Student.course == course_name if course_name else or_(
+                    Student.course.is_(None),
+                    Student.course == ''
+                )
+            ).count()
+            
+            # Get sessions for this course
+            if course_name:
+                sessions = ClassSession.query.filter(
+                    date_filter,
+                    ClassSession.course == course_name
+                ).all()
+            else:
+                sessions = ClassSession.query.filter(
+                    date_filter,
+                    or_(
+                        ClassSession.course.is_(None),
+                        ClassSession.course == ''
+                    )
+                ).all()
+            
+            session_count = len(sessions)
+            
+            # Calculate average attendance
+            if session_count > 0:
+                total_present = sum(session.present_students for session in sessions)
+                total_students = sum(session.total_students for session in sessions)
+                avg_attendance = (total_present / total_students * 100) if total_students > 0 else 0
+                last_session = max(sessions, key=lambda s: s.date).date if sessions else None
+            else:
+                avg_attendance = 0
+                last_session = None
+            
+            course_attendance.append({
+                'name': display_name,
+                'student_count': student_count,
+                'session_count': session_count,
+                'avg_attendance': avg_attendance,
+                'last_session': last_session
+            })
+        
+        # Get students with consecutive absences (3+)
+        consecutive_absences = []
+        
+        # Get all active students
+        students = Student.query.all()
+        
+        for student in students:
+            # Get all sessions in date range ordered by date
+            sessions_in_range = ClassSession.query.filter(date_filter).order_by(ClassSession.date).all()
+            
+            # Skip if no sessions
+            if not sessions_in_range:
+                continue
+            
+            # Check attendance for each session
+            absent_streak = 0
+            max_absent_streak = 0
+            last_present = None
+            
+            for session in sessions_in_range:
+                attendance = Attendance.query.filter_by(
+                    student_id=student.id,
+                    class_session_id=session.id
+                ).first()
+                
+                if attendance:
+                    # Student was present
+                    absent_streak = 0
+                    last_present = session.date
+                else:
+                    # Student was absent
+                    absent_streak += 1
+                    max_absent_streak = max(max_absent_streak, absent_streak)
+            
+            # If student has 3+ consecutive absences, add to the list
+            if max_absent_streak >= 3:
+                consecutive_absences.append({
+                    'id': student.id,
+                    'roll_number': student.roll_number,
+                    'name': student.name,
+                    'course': student.course,
+                    'consecutive_absences': max_absent_streak,
+                    'last_attendance': last_present
+                })
+        
+        # Get students with less than 80% attendance
+        low_attendance = []
+        
+        for student in student_attendance:
+            if student['total_sessions'] > 0:
+                attendance_percentage = (student['present_count'] / student['total_sessions']) * 100
+                if attendance_percentage < 80:
+                    low_attendance.append(student)
+        
+        return render_template('reports.html',
+                              sessions=class_sessions,
+                              student_attendance=student_attendance,
+                              course_attendance=course_attendance,
+                              low_attendance=low_attendance,
+                              consecutive_absences=consecutive_absences,
+                              courses=courses,
+                              start_date=start_date,
+                              end_date=end_date,
+                              selected_course=course_filter)
+    
+    except Exception as e:
+        logger.error(f"Error generating reports: {str(e)}")
+        flash(f"Error generating reports: {str(e)}", 'danger')
+        return redirect(url_for('dashboard'))
+
+@app.route('/export/attendance/<string:report_type>')
+@login_required
+def export_attendance(report_type):
+    """Export attendance data as CSV"""
+    try:
+        # Get date range parameters
+        start_date_str = request.args.get('start_date', '')
+        end_date_str = request.args.get('end_date', '')
+        course_filter = request.args.get('course', '')
+        
+        # Default to last 30 days if no date range provided
+        today = date.today()
+        if start_date_str and end_date_str:
+            try:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                start_date = today - timedelta(days=30)
+                end_date = today
+        else:
+            start_date = today - timedelta(days=30)
+            end_date = today
+        
+        # Build the date range filter
+        date_filter = and_(ClassSession.date >= start_date, ClassSession.date <= end_date)
+        
+        # Create a CSV output file in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        if report_type == 'daily':
+            # Export daily attendance
+            writer.writerow(['Date', 'Session Name', 'Course', 'Students Present', 'Total Students', 'Attendance %'])
+            
+            if course_filter:
+                sessions = ClassSession.query.filter(
+                    date_filter,
+                    ClassSession.course == course_filter
+                ).order_by(ClassSession.date.desc()).all()
+            else:
+                sessions = ClassSession.query.filter(date_filter).order_by(ClassSession.date.desc()).all()
+            
+            for session in sessions:
+                attendance_percentage = (session.present_students / session.total_students * 100) if session.total_students > 0 else 0
+                writer.writerow([
+                    session.date.strftime('%Y-%m-%d'),
+                    session.name,
+                    session.course or 'N/A',
+                    session.present_students,
+                    session.total_students,
+                    f"{attendance_percentage:.1f}%"
+                ])
+            
+            filename = f"daily_attendance_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv"
+        
+        elif report_type == 'student':
+            # Export student-wise attendance
+            writer.writerow(['Roll Number', 'Name', 'Course', 'Present Days', 'Total Sessions', 'Attendance %', 'Last Attendance'])
+            
+            # Query for student-wise attendance stats
+            student_stats = db.session.query(
+                Student.id,
+                Student.roll_number,
+                Student.name,
+                Student.course,
+                func.count(Attendance.id).label('present_count'),
+                func.max(ClassSession.date).label('last_attendance')
+            ).outerjoin(
+                Attendance, Student.id == Attendance.student_id
+            ).outerjoin(
+                ClassSession, and_(
+                    Attendance.class_session_id == ClassSession.id,
+                    date_filter
+                )
+            ).group_by(
+                Student.id
+            ).all()
+            
+            # Count total sessions in date range
+            if course_filter:
+                total_sessions = ClassSession.query.filter(
+                    date_filter,
+                    ClassSession.course == course_filter
+                ).count()
+            else:
+                total_sessions = ClassSession.query.filter(date_filter).count()
+            
+            for student in student_stats:
+                attendance_percentage = (student.present_count / total_sessions * 100) if total_sessions > 0 else 0
+                writer.writerow([
+                    student.roll_number,
+                    student.name,
+                    student.course or 'N/A',
+                    student.present_count,
+                    total_sessions,
+                    f"{attendance_percentage:.1f}%",
+                    student.last_attendance.strftime('%Y-%m-%d') if student.last_attendance else 'Never'
+                ])
+            
+            filename = f"student_attendance_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv"
+        
+        elif report_type == 'course':
+            # Export course-wise attendance
+            writer.writerow(['Course', 'Total Students', 'Total Sessions', 'Average Attendance %', 'Last Session'])
+            
+            # Get all courses with at least one student
+            all_courses = db.session.query(Student.course).distinct().filter(
+                Student.course.isnot(None),
+                Student.course != ''
+            ).all()
+            all_courses = [course[0] for course in all_courses]
+            
+            # Add an entry for students without a course
+            all_courses.append(None)
+            
+            for course_name in all_courses:
+                display_name = course_name or 'Uncategorized'
+                
+                # Count students in this course
+                student_count = Student.query.filter(
+                    Student.course == course_name if course_name else or_(
+                        Student.course.is_(None),
+                        Student.course == ''
+                    )
+                ).count()
+                
+                # Get sessions for this course
+                if course_name:
+                    sessions = ClassSession.query.filter(
+                        date_filter,
+                        ClassSession.course == course_name
+                    ).all()
+                else:
+                    sessions = ClassSession.query.filter(
+                        date_filter,
+                        or_(
+                            ClassSession.course.is_(None),
+                            ClassSession.course == ''
+                        )
+                    ).all()
+                
+                session_count = len(sessions)
+                
+                # Calculate average attendance
+                if session_count > 0:
+                    total_present = sum(session.present_students for session in sessions)
+                    total_students = sum(session.total_students for session in sessions)
+                    avg_attendance = (total_present / total_students * 100) if total_students > 0 else 0
+                    last_session = max(sessions, key=lambda s: s.date).date if sessions else None
+                else:
+                    avg_attendance = 0
+                    last_session = None
+                
+                writer.writerow([
+                    display_name,
+                    student_count,
+                    session_count,
+                    f"{avg_attendance:.1f}%",
+                    last_session.strftime('%Y-%m-%d') if last_session else 'N/A'
+                ])
+            
+            filename = f"course_attendance_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv"
+        
+        elif report_type == 'alerts':
+            # Export attendance alerts
+            writer.writerow(['Roll Number', 'Name', 'Course', 'Present Days', 'Total Sessions', 'Attendance %', 'Consecutive Absences', 'Last Attendance'])
+            
+            # First get students with less than 80% attendance
+            student_stats = db.session.query(
+                Student.id,
+                Student.roll_number,
+                Student.name,
+                Student.course,
+                func.count(Attendance.id).label('present_count'),
+                func.max(ClassSession.date).label('last_attendance')
+            ).outerjoin(
+                Attendance, Student.id == Attendance.student_id
+            ).outerjoin(
+                ClassSession, and_(
+                    Attendance.class_session_id == ClassSession.id,
+                    date_filter
+                )
+            ).group_by(
+                Student.id
+            ).all()
+            
+            # Count total sessions in date range
+            if course_filter:
+                total_sessions = ClassSession.query.filter(
+                    date_filter,
+                    ClassSession.course == course_filter
+                ).count()
+            else:
+                total_sessions = ClassSession.query.filter(date_filter).count()
+            
+            # Calculate consecutive absences for each student
+            for student in student_stats:
+                attendance_percentage = (student.present_count / total_sessions * 100) if total_sessions > 0 else 0
+                
+                if attendance_percentage < 80 or total_sessions - student.present_count >= 3:
+                    # Calculate consecutive absences
+                    consecutive_absences = 0
+                    sessions_in_range = ClassSession.query.filter(date_filter).order_by(ClassSession.date).all()
+                    
+                    absent_streak = 0
+                    max_absent_streak = 0
+                    
+                    for session in sessions_in_range:
+                        attendance = Attendance.query.filter_by(
+                            student_id=student.id,
+                            class_session_id=session.id
+                        ).first()
+                        
+                        if attendance:
+                            absent_streak = 0
+                        else:
+                            absent_streak += 1
+                            max_absent_streak = max(max_absent_streak, absent_streak)
+                    
+                    consecutive_absences = max_absent_streak
+                    
+                    writer.writerow([
+                        student.roll_number,
+                        student.name,
+                        student.course or 'N/A',
+                        student.present_count,
+                        total_sessions,
+                        f"{attendance_percentage:.1f}%",
+                        consecutive_absences,
+                        student.last_attendance.strftime('%Y-%m-%d') if student.last_attendance else 'Never'
+                    ])
+            
+            filename = f"attendance_alerts_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv"
+        
+        else:
+            return jsonify({'error': 'Invalid report type'}), 400
+        
+        # Seek to the beginning of the in-memory file
+        output.seek(0)
+        
+        # Create response
+        return Response(
+            output,
+            mimetype='text/csv',
+            headers={
+                'Content-Disposition': f'attachment; filename={filename}'
+            }
+        )
+    
+    except Exception as e:
+        logger.error(f"Error exporting attendance: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/student/attendance/<int:student_id>')
+@login_required
+def student_attendance_detail(student_id):
+    """Get detailed attendance for a specific student"""
+    try:
+        # Get student
+        student = Student.query.get_or_404(student_id)
+        
+        # Get date range parameters
+        start_date_str = request.args.get('start_date', '')
+        end_date_str = request.args.get('end_date', '')
+        
+        # Default to last 30 days if no date range provided
+        today = date.today()
+        if start_date_str and end_date_str:
+            try:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                start_date = today - timedelta(days=30)
+                end_date = today
+        else:
+            start_date = today - timedelta(days=30)
+            end_date = today
+        
+        # Get all sessions in date range
+        sessions = ClassSession.query.filter(
+            ClassSession.date >= start_date,
+            ClassSession.date <= end_date
+        ).order_by(ClassSession.date).all()
+        
+        # Check attendance for each session
+        attendance_data = []
+        
+        for session in sessions:
+            attendance = Attendance.query.filter_by(
+                student_id=student.id,
+                class_session_id=session.id
+            ).first()
+            
+            attendance_data.append({
+                'session_id': session.id,
+                'session_name': session.name,
+                'date': session.date.strftime('%Y-%m-%d'),
+                'course': session.course or 'N/A',
+                'status': 'Present' if attendance else 'Absent',
+                'marked_at': attendance.marked_at.strftime('%Y-%m-%d %H:%M:%S') if attendance else None
+            })
+        
+        # Calculate overall attendance percentage
+        total_sessions = len(sessions)
+        present_count = sum(1 for item in attendance_data if item['status'] == 'Present')
+        attendance_percentage = (present_count / total_sessions * 100) if total_sessions > 0 else 0
+        
+        # Find consecutive absences
+        absent_streak = 0
+        max_absent_streak = 0
+        
+        for item in attendance_data:
+            if item['status'] == 'Absent':
+                absent_streak += 1
+                max_absent_streak = max(max_absent_streak, absent_streak)
+            else:
+                absent_streak = 0
+        
+        return jsonify({
+            'student': {
+                'id': student.id,
+                'roll_number': student.roll_number,
+                'name': student.name,
+                'course': student.course or 'N/A'
+            },
+            'attendance_summary': {
+                'total_sessions': total_sessions,
+                'present_count': present_count,
+                'absent_count': total_sessions - present_count,
+                'attendance_percentage': round(attendance_percentage, 1),
+                'consecutive_absences': max_absent_streak
+            },
+            'date_range': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d')
+            },
+            'attendance_data': attendance_data
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting student attendance detail: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 # Static file serving routes
 @app.route('/static/<path:filename>')

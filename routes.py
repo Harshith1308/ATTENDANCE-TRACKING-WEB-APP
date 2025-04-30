@@ -211,7 +211,7 @@ def take_attendance():
             flash('Error processing images', 'danger')
             return redirect(url_for('take_attendance'))
     
-    return render_template('upload.html')
+    return render_template('take_attendance.html')
 
 @app.route('/students', methods=['GET', 'POST'])
 @login_required
